@@ -139,10 +139,37 @@ def login():
             return err("Faltan campos: identifier y password son obligatorios")
 
         db = get_db()
-        cur = db.cursor()
+        cur = None
+        try:
+            cur = db.cursor()
 
-        # ---- forzar role=user (texto plano) ----
-        if role == "user":
+            # ---- forzar role=user (texto plano) ----
+            if role == "user":
+                cur.execute("""
+                    SELECT id, first_name, last_name, phone, email, username, password
+                    FROM users
+                    WHERE (LOWER(email)=LOWER(%s) OR LOWER(username)=LOWER(%s))
+                    LIMIT 1
+                """, (identifier, identifier))
+                row = cur.fetchone()
+                if not row or row.get("password") != password:
+                    return err("Credenciales inválidas (user)", 401)
+                return ok({"role": "user", "id": row["id"], "first_name": row["first_name"], "last_name": row["last_name"]})
+
+            # ---- forzar role=doctor (texto plano) ----
+            if role == "doctor":
+                cur.execute("""
+                    SELECT doctor_id, first_name, last_name, email, username, password
+                    FROM doctors
+                    WHERE (LOWER(email)=LOWER(%s) OR LOWER(username)=LOWER(%s))
+                    LIMIT 1
+                """, (identifier, identifier))
+                row = cur.fetchone()
+                if not row or row.get("password") != password:
+                    return err("Credenciales inválidas (doctor)", 401)
+                return ok({"role": "doctor", "id": row["doctor_id"], "first_name": row["first_name"], "last_name": row["last_name"]})
+
+            # ---- sin role: intenta user y luego doctor (ambos texto plano) ----
             cur.execute("""
                 SELECT id, first_name, last_name, phone, email, username, password
                 FROM users
@@ -150,12 +177,9 @@ def login():
                 LIMIT 1
             """, (identifier, identifier))
             row = cur.fetchone()
-            if not row or row.get("password") != password:
-                return err("Credenciales inválidas (user)", 401)
-            return ok({"role": "user", "id": row["id"], "first_name": row["first_name"], "last_name": row["last_name"]})
+            if row and row.get("password") == password:
+                return ok({"role": "user", "id": row["id"], "first_name": row["first_name"], "last_name": row["last_name"]})
 
-        # ---- forzar role=doctor (texto plano) ----
-        if role == "doctor":
             cur.execute("""
                 SELECT doctor_id, first_name, last_name, email, username, password
                 FROM doctors
@@ -163,32 +187,13 @@ def login():
                 LIMIT 1
             """, (identifier, identifier))
             row = cur.fetchone()
-            if not row or row.get("password") != password:
-                return err("Credenciales inválidas (doctor)", 401)
-            return ok({"role": "doctor", "id": row["doctor_id"], "first_name": row["first_name"], "last_name": row["last_name"]})
+            if row and row.get("password") == password:
+                return ok({"role": "doctor", "id": row["doctor_id"], "first_name": row["first_name"], "last_name": row["last_name"]})
 
-        # ---- sin role: intenta user y luego doctor (ambos texto plano) ----
-        cur.execute("""
-            SELECT id, first_name, last_name, phone, email, username, password
-            FROM users
-            WHERE (LOWER(email)=LOWER(%s) OR LOWER(username)=LOWER(%s))
-            LIMIT 1
-        """, (identifier, identifier))
-        row = cur.fetchone()
-        if row and row.get("password") == password:
-            return ok({"role": "user", "id": row["id"], "first_name": row["first_name"], "last_name": row["last_name"]})
-
-        cur.execute("""
-            SELECT doctor_id, first_name, last_name, email, username, password
-            FROM doctors
-            WHERE (LOWER(email)=LOWER(%s) OR LOWER(username)=LOWER(%s))
-            LIMIT 1
-        """, (identifier, identifier))
-        row = cur.fetchone()
-        if row and row.get("password") == password:
-            return ok({"role": "doctor", "id": row["doctor_id"], "first_name": row["first_name"], "last_name": row["last_name"]})
-
-        return err("Credenciales inválidas", 401)
+            return err("Credenciales inválidas", 401)
+        finally:
+            if cur:
+                cur.close()
 
     except Exception as e:
         import traceback, sys
