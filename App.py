@@ -266,7 +266,7 @@ def share_with_doctor():
             fecha = date.today()
 
         db = get_db()
-        cur = db.cursor(dictionary=True)
+        cur = db.cursor()
 
         # Verifica existencia
         cur.execute("SELECT doctor_id FROM doctors WHERE doctor_id=%s LIMIT 1", (doctor_id,))
@@ -301,7 +301,7 @@ def list_patients_for_doctor(doctor_id):
     """
     try:
         db = get_db()
-        cur = db.cursor(dictionary=True)
+        cur = db.cursor()
 
         # Confirmar doctor
         cur.execute("SELECT doctor_id FROM doctors WHERE doctor_id=%s LIMIT 1", (doctor_id,))
@@ -337,7 +337,7 @@ def patient_detail_for_doctor(doctor_id, patient_id):
     """
     try:
         db = get_db()
-        cur = db.cursor(dictionary=True)
+        cur = db.cursor()
 
         # Confirmar doctor
         cur.execute("SELECT doctor_id FROM doctors WHERE doctor_id=%s LIMIT 1", (doctor_id,))
