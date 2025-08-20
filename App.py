@@ -242,9 +242,8 @@ def register_doctor():
 # -----------------------------
 @app.post("/patients/share")
 def share_with_doctor():
-    """
-    body: { doctor_id:int, patient_id:int, note?:string, fecha?: 'yyyy-MM-dd' }
-    """
+    """Comparte un paciente con un doctor."""
+    cur = None
     try:
         body = request.get_json(silent=True) or {}
         doctor_id  = body.get("doctor_id")
@@ -258,8 +257,8 @@ def share_with_doctor():
         # Normaliza fecha (si no viene, hoy)
         if fecha_str:
             try:
-                y,m,d = map(int, fecha_str.split("-"))
-                fecha = date(y,m,d)
+                y, m, d = map(int, fecha_str.split("-"))
+                fecha = date(y, m, d)
             except Exception:
                 return err("fecha debe tener formato yyyy-MM-dd")
         else:
@@ -285,7 +284,6 @@ def share_with_doctor():
         db.commit()
 
         new_id = cur.lastrowid
-        cur.close()
         return ok({"id": new_id, "doctor_id": doctor_id, "patient_id": patient_id, "fecha": str(fecha)}, status=201)
 
     except Exception as e:
@@ -293,12 +291,14 @@ def share_with_doctor():
         print("ERROR /patients/share:", e, file=sys.stderr)
         traceback.print_exc()
         return err(f"DB error: {str(e)}", 500)
+    finally:
+        if cur:
+            cur.close()
 
 @app.get("/doctors/<int:doctor_id>/patients")
 def list_patients_for_doctor(doctor_id):
-    """
-    Lista pacientes que han compartido con el doctor, con última fecha y #envíos.
-    """
+    """Lista pacientes que han compartido con el doctor."""
+    cur = None
     try:
         db = get_db()
         cur = db.cursor()
@@ -322,19 +322,20 @@ def list_patients_for_doctor(doctor_id):
             ORDER BY last_shared_date DESC, patient_fullname ASC
         """, (doctor_id,))
         rows = cur.fetchall()
-        cur.close()
         return ok(rows)
     except Exception as e:
         import traceback, sys
         print("ERROR GET /doctors/<id>/patients:", e, file=sys.stderr)
         traceback.print_exc()
         return err("Error interno en /doctors/{id}/patients", 500)
+    finally:
+        if cur:
+            cur.close()
 
 @app.get("/doctors/<int:doctor_id>/patients/<int:patient_id>")
 def patient_detail_for_doctor(doctor_id, patient_id):
-    """
-    Detalle de un paciente y sus notas/fechas compartidas con ese doctor.
-    """
+    """Detalle de un paciente y sus notas/fechas compartidas."""
+    cur = None
     try:
         db = get_db()
         cur = db.cursor()
@@ -362,13 +363,15 @@ def patient_detail_for_doctor(doctor_id, patient_id):
         """, (doctor_id, patient_id))
         notes = cur.fetchall()
 
-        cur.close()
         return ok({"patient": patient, "notes": notes})
     except Exception as e:
         import traceback, sys
         print("ERROR GET /doctors/<id>/patients/<pid>:", e, file=sys.stderr)
         traceback.print_exc()
         return err("Error interno en detalle de paciente", 500)
+    finally:
+        if cur:
+            cur.close()
 
 # -----------------------------
 # Síntomas (Registros diarios)
