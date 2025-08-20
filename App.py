@@ -244,7 +244,6 @@ def register_doctor():
 # -----------------------------
 # listar doctores
 # -----------------------------
-@app.post("/patients/share")
 @app.get("/doctors")
 def list_doctors():
     """Listado simple de doctores para selección en la app."""
@@ -257,7 +256,6 @@ def list_doctors():
             ORDER BY first_name, last_name
         """)
         rows = cur.fetchall()
-        # rows es lista de dicts porque tienes MYSQL_CURSORCLASS='DictCursor'
         return ok(rows)
     except Exception as e:
         import traceback, sys
