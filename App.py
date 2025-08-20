@@ -139,10 +139,37 @@ def login():
             return err("Faltan campos: identifier y password son obligatorios")
 
         db = get_db()
-        cur = db.cursor()
+        cur = None
+        try:
+            cur = db.cursor()
 
-        # ---- forzar role=user (texto plano) ----
-        if role == "user":
+            # ---- forzar role=user (texto plano) ----
+            if role == "user":
+                cur.execute("""
+                    SELECT id, first_name, last_name, phone, email, username, password
+                    FROM users
+                    WHERE (LOWER(email)=LOWER(%s) OR LOWER(username)=LOWER(%s))
+                    LIMIT 1
+                """, (identifier, identifier))
+                row = cur.fetchone()
+                if not row or row.get("password") != password:
+                    return err("Credenciales inválidas (user)", 401)
+                return ok({"role": "user", "id": row["id"], "first_name": row["first_name"], "last_name": row["last_name"]})
+
+            # ---- forzar role=doctor (texto plano) ----
+            if role == "doctor":
+                cur.execute("""
+                    SELECT doctor_id, first_name, last_name, email, username, password
+                    FROM doctors
+                    WHERE (LOWER(email)=LOWER(%s) OR LOWER(username)=LOWER(%s))
+                    LIMIT 1
+                """, (identifier, identifier))
+                row = cur.fetchone()
+                if not row or row.get("password") != password:
+                    return err("Credenciales inválidas (doctor)", 401)
+                return ok({"role": "doctor", "id": row["doctor_id"], "first_name": row["first_name"], "last_name": row["last_name"]})
+
+            # ---- sin role: intenta user y luego doctor (ambos texto plano) ----
             cur.execute("""
                 SELECT id, first_name, last_name, phone, email, username, password
                 FROM users
@@ -150,12 +177,9 @@ def login():
                 LIMIT 1
             """, (identifier, identifier))
             row = cur.fetchone()
-            if not row or row.get("password") != password:
-                return err("Credenciales inválidas (user)", 401)
-            return ok({"role": "user", "id": row["id"], "first_name": row["first_name"], "last_name": row["last_name"]})
+            if row and row.get("password") == password:
+                return ok({"role": "user", "id": row["id"], "first_name": row["first_name"], "last_name": row["last_name"]})
 
-        # ---- forzar role=doctor (texto plano) ----
-        if role == "doctor":
             cur.execute("""
                 SELECT doctor_id, first_name, last_name, email, username, password
                 FROM doctors
@@ -163,32 +187,13 @@ def login():
                 LIMIT 1
             """, (identifier, identifier))
             row = cur.fetchone()
-            if not row or row.get("password") != password:
-                return err("Credenciales inválidas (doctor)", 401)
-            return ok({"role": "doctor", "id": row["doctor_id"], "first_name": row["first_name"], "last_name": row["last_name"]})
+            if row and row.get("password") == password:
+                return ok({"role": "doctor", "id": row["doctor_id"], "first_name": row["first_name"], "last_name": row["last_name"]})
 
-        # ---- sin role: intenta user y luego doctor (ambos texto plano) ----
-        cur.execute("""
-            SELECT id, first_name, last_name, phone, email, username, password
-            FROM users
-            WHERE (LOWER(email)=LOWER(%s) OR LOWER(username)=LOWER(%s))
-            LIMIT 1
-        """, (identifier, identifier))
-        row = cur.fetchone()
-        if row and row.get("password") == password:
-            return ok({"role": "user", "id": row["id"], "first_name": row["first_name"], "last_name": row["last_name"]})
-
-        cur.execute("""
-            SELECT doctor_id, first_name, last_name, email, username, password
-            FROM doctors
-            WHERE (LOWER(email)=LOWER(%s) OR LOWER(username)=LOWER(%s))
-            LIMIT 1
-        """, (identifier, identifier))
-        row = cur.fetchone()
-        if row and row.get("password") == password:
-            return ok({"role": "doctor", "id": row["doctor_id"], "first_name": row["first_name"], "last_name": row["last_name"]})
-
-        return err("Credenciales inválidas", 401)
+            return err("Credenciales inválidas", 401)
+        finally:
+            if cur:
+                cur.close()
 
     except Exception as e:
         import traceback, sys
@@ -265,9 +270,8 @@ def list_doctors():
 # -----------------------------
 @app.post("/patients/share")
 def share_with_doctor():
-    """
-    body: { doctor_id:int, patient_id:int, note?:string, fecha?: 'yyyy-MM-dd' }
-    """
+    """Comparte un paciente con un doctor."""
+    cur = None
     try:
         body = request.get_json(silent=True) or {}
         doctor_id  = body.get("doctor_id")
@@ -281,8 +285,8 @@ def share_with_doctor():
         # Normaliza fecha (si no viene, hoy)
         if fecha_str:
             try:
-                y,m,d = map(int, fecha_str.split("-"))
-                fecha = date(y,m,d)
+                y, m, d = map(int, fecha_str.split("-"))
+                fecha = date(y, m, d)
             except Exception:
                 return err("fecha debe tener formato yyyy-MM-dd")
         else:
@@ -308,7 +312,6 @@ def share_with_doctor():
         db.commit()
 
         new_id = cur.lastrowid
-        cur.close()
         return ok({"id": new_id, "doctor_id": doctor_id, "patient_id": patient_id, "fecha": str(fecha)}, status=201)
 
     except Exception as e:
@@ -316,12 +319,14 @@ def share_with_doctor():
         print("ERROR /patients/share:", e, file=sys.stderr)
         traceback.print_exc()
         return err(f"DB error: {str(e)}", 500)
+    finally:
+        if cur:
+            cur.close()
 
 @app.get("/doctors/<int:doctor_id>/patients")
 def list_patients_for_doctor(doctor_id):
-    """
-    Lista pacientes que han compartido con el doctor, con última fecha y #envíos.
-    """
+    """Lista pacientes que han compartido con el doctor."""
+    cur = None
     try:
         db = get_db()
         cur = db.cursor()
@@ -345,19 +350,20 @@ def list_patients_for_doctor(doctor_id):
             ORDER BY last_shared_date DESC, patient_fullname ASC
         """, (doctor_id,))
         rows = cur.fetchall()
-        cur.close()
         return ok(rows)
     except Exception as e:
         import traceback, sys
         print("ERROR GET /doctors/<id>/patients:", e, file=sys.stderr)
         traceback.print_exc()
         return err("Error interno en /doctors/{id}/patients", 500)
+    finally:
+        if cur:
+            cur.close()
 
 @app.get("/doctors/<int:doctor_id>/patients/<int:patient_id>")
 def patient_detail_for_doctor(doctor_id, patient_id):
-    """
-    Detalle de un paciente y sus notas/fechas compartidas con ese doctor.
-    """
+    """Detalle de un paciente y sus notas/fechas compartidas."""
+    cur = None
     try:
         db = get_db()
         cur = db.cursor()
@@ -385,13 +391,15 @@ def patient_detail_for_doctor(doctor_id, patient_id):
         """, (doctor_id, patient_id))
         notes = cur.fetchall()
 
-        cur.close()
         return ok({"patient": patient, "notes": notes})
     except Exception as e:
         import traceback, sys
         print("ERROR GET /doctors/<id>/patients/<pid>:", e, file=sys.stderr)
         traceback.print_exc()
         return err("Error interno en detalle de paciente", 500)
+    finally:
+        if cur:
+            cur.close()
 
 # -----------------------------
 # Síntomas (Registros diarios)
