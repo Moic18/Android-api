@@ -236,6 +236,29 @@ def register_doctor():
         return err(f"Error insertando doctor: {str(e)}", 500)
     finally:
         cur.close()
+# -----------------------------
+# listar doctores
+# -----------------------------
+@app.post("/patients/share")
+@app.get("/doctors")
+def list_doctors():
+    """Listado simple de doctores para selección en la app."""
+    try:
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("""
+            SELECT doctor_id, first_name, last_name, email, username
+            FROM doctors
+            ORDER BY first_name, last_name
+        """)
+        rows = cur.fetchall()
+        # rows es lista de dicts porque tienes MYSQL_CURSORCLASS='DictCursor'
+        return ok(rows)
+    except Exception as e:
+        import traceback, sys
+        print("ERROR GET /doctors:", e, file=sys.stderr)
+        traceback.print_exc()
+        return err("Error interno listando doctores", 500)
 
 # -----------------------------
 # Compartir con doctor (tabla doctor_patients)
