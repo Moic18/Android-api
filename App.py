@@ -61,6 +61,40 @@ def health():
 # -----------------------------
 @app.post("/auth/register_user")
 def register_user():
+    try:
+        data = request.get_json(force=True)
+        first_name = (data.get("first_name") or "").strip()
+        last_name  = (data.get("last_name") or "").strip()
+        phone      = (data.get("phone") or "").strip()
+        usuario    = (data.get("usuario_correo") or "").strip()  # puede ser email o username
+        password   = (data.get("password") or "").strip()
+
+        if not first_name or not usuario or not password:
+            return err("Faltan campos obligatorios (first_name, usuario_correo, password)", 400)
+
+        db = get_db()
+        cur = db.cursor()
+
+        if "@" in usuario:
+            cur.execute("""
+                INSERT INTO users (first_name, last_name, phone, email, password_plain, is_active)
+                VALUES (%s,%s,%s,%s,%s,1)
+            """, (first_name, last_name, phone, usuario, password))
+        else:
+            cur.execute("""
+                INSERT INTO users (first_name, last_name, phone, username, password_plain, is_active)
+                VALUES (%s,%s,%s,%s,%s,1)
+            """, (first_name, last_name, phone, usuario, password))
+
+        db.commit()
+        new_id = cur.lastrowid
+        return ok({"id": new_id, "first_name": first_name, "last_name": last_name}, 201)
+    except Exception as e:
+        import traceback, sys
+        print("ERROR /auth/register_user:", e, file=sys.stderr)
+        traceback.print_exc()
+        return err("Error registrando usuario", 500)
+
     """
     body: {first_name, last_name, phone, usuario_correo, password}
     - usuario_correo puede ser email o username
@@ -120,6 +154,53 @@ def register_user():
 
 @app.post("/auth/login")
 def login():
+    try:
+        data = request.get_json(force=True)
+        identifier = (data.get("identifier") or "").strip()
+        password   = (data.get("password") or "").strip()
+
+        db = get_db()
+        cur = db.cursor()
+
+        # 1) Admin
+        cur.execute("""
+            SELECT id, username FROM admins
+            WHERE (username=%s) AND password_plain=%s AND is_active=1 LIMIT 1
+        """, (identifier, password))
+        row = cur.fetchone()
+        if row:
+            return ok({
+                "role": "admin",
+                "id": row["id"],
+                "first_name": "Admin",
+                "last_name": "",
+            })
+
+        # 2) Doctor (si quieres permitir login de doctores)
+        cur.execute("""
+            SELECT doctor_id AS id, first_name, last_name FROM doctors
+            WHERE (username=%s OR email=%s) AND password_plain=%s AND is_active=1 LIMIT 1
+        """, (identifier, identifier, password))
+        row = cur.fetchone()
+        if row:
+            return ok({"role": "doctor", **row})
+
+        # 3) User
+        cur.execute("""
+            SELECT id, first_name, last_name FROM users
+            WHERE (username=%s OR email=%s) AND password_plain=%s AND is_active=1 LIMIT 1
+        """, (identifier, identifier, password))
+        row = cur.fetchone()
+        if row:
+            return ok({"role": "user", **row})
+
+        return err("Credenciales inválidas", 401)
+
+    except Exception as e:
+        import traceback, sys
+        print("ERROR /auth/login:", e, file=sys.stderr)
+        traceback.print_exc()
+        return err("Error interno en login", 500)
     """
     body: {identifier, password, role?}
       - identifier: email o username
@@ -480,6 +561,255 @@ def list_symptoms(user_id: int):
         return err(f"Error listando registros: {str(e)}", 500)
     finally:
         cur.close()
+
+def require_admin(db):
+    """Valida admin por headers X-Admin-User y X-Admin-Pass (texto plano)."""
+    u = request.headers.get("X-Admin-User")
+    p = request.headers.get("X-Admin-Pass")
+    if not u or not p:
+        return None, ("Faltan credenciales de admin en headers", 401)
+
+    cur = db.cursor()
+    cur.execute("""
+        SELECT id, username FROM admins
+        WHERE username=%s AND password_plain=%s AND is_active=1
+        LIMIT 1
+    """, (u, p))
+    row = cur.fetchone()
+    if not row:
+        return None, ("Admin inválido o inactivo", 403)
+    return row, None
+
+@app.route("/admin/users", methods=["GET"])
+def admin_list_users():
+    if not require_admin():
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+    active = request.args.get("active")  # "1", "0" o None
+    params = []
+    sql = """SELECT id, first_name, last_name, email, username, phone, is_active
+             FROM users"""
+    if active in ("0", "1"):
+        sql += " WHERE is_active=%s"
+        params.append(int(active))
+
+    sql += " ORDER BY id DESC"
+
+    try:
+        conn = get_db()  # tu función para obtener conexión
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall()
+        return jsonify({"ok": True, "data": rows})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"DB error: {e}"}), 500
+    finally:
+        try:
+            cur.close()
+            conn.close()
+        except:
+            pass
+
+
+@app.route("/admin/doctors", methods=["GET"])
+def admin_list_doctors():
+    if not require_admin():
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+    active = request.args.get("active")
+    params = []
+    sql = """SELECT doctor_id, first_name, last_name, email, username, is_active
+             FROM doctors"""
+    if active in ("0", "1"):
+        sql += " WHERE is_active=%s"
+        params.append(int(active))
+    sql += " ORDER BY doctor_id DESC"
+
+    try:
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall()
+        return jsonify({"ok": True, "data": rows})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"DB error: {e}"}), 500
+    finally:
+        try:
+            cur.close()
+            conn.close()
+        except:
+            pass
+
+@app.post("/admin/users")
+def admin_create_user():
+    db = get_db()
+    admin, error = require_admin(db)
+    if error: return err(error[0], error[1])
+    try:
+        data = request.get_json(force=True)
+        first_name = (data.get("first_name") or "").strip()
+        last_name  = (data.get("last_name") or "").strip()
+        phone      = (data.get("phone") or "").strip()
+        usuario    = (data.get("usuario_correo") or "").strip()  # email o username
+        password   = (data.get("password") or "").strip()
+
+        if not first_name or not usuario or not password:
+            return err("Faltan campos obligatorios (first_name, usuario_correo, password)", 400)
+
+        cur = db.cursor()
+        # Detecta si es email o username
+        if "@" in usuario:
+            cur.execute("""
+                INSERT INTO users (first_name, last_name, phone, email, password_plain, is_active)
+                VALUES (%s,%s,%s,%s,%s,1)
+            """, (first_name, last_name, phone, usuario, password))
+        else:
+            cur.execute("""
+                INSERT INTO users (first_name, last_name, phone, username, password_plain, is_active)
+                VALUES (%s,%s,%s,%s,%s,1)
+            """, (first_name, last_name, phone, usuario, password))
+        db.commit()
+        return ok({"id": cur.lastrowid}, 201)
+    except Exception as e:
+        import traceback, sys
+        print("ERROR POST /admin/users:", e, file=sys.stderr)
+        traceback.print_exc()
+        return err("Error creando usuario", 500)
+
+@app.post("/admin/doctors")
+def admin_create_doctor():
+    db = get_db()
+    admin, error = require_admin(db)
+    if error: return err(error[0], error[1])
+
+    try:
+        data = request.get_json(force=True)
+        first_name = (data.get("first_name") or "").strip()
+        last_name  = (data.get("last_name") or "").strip()
+        email      = (data.get("email") or "").strip() or None
+        username   = (data.get("username") or "").strip()
+        password   = (data.get("password") or "").strip()
+
+        if not first_name or not username or not password:
+            return err("Faltan campos (first_name, username, password)", 400)
+
+        cur = db.cursor()
+
+        # valida duplicados
+        cur.execute("SELECT 1 FROM doctors WHERE username=%s LIMIT 1", (username,))
+        if cur.fetchone():
+            return err("Username ya existe", 409)
+        if email:
+            cur.execute("SELECT 1 FROM doctors WHERE email=%s LIMIT 1", (email,))
+            if cur.fetchone():
+                return err("Email ya existe", 409)
+
+        cur.execute("""
+            INSERT INTO doctors (first_name, last_name, email, username, password_plain, is_active)
+            VALUES (%s,%s,%s,%s,%s,1)
+        """, (first_name, last_name, email, username, password))
+        db.commit()
+
+        return ok({"id": cur.lastrowid}, 201)
+
+    except Exception as e:
+        import traceback, sys
+        print("ERROR POST /admin/doctors:", e, file=sys.stderr)
+        traceback.print_exc()
+        return err(f"Error creando doctor: {e}", 500)
+
+    db = get_db()
+    admin, error = require_admin(db)
+    if error: return err(error[0], error[1])
+    try:
+        data = request.get_json(force=True)
+        first_name = (data.get("first_name") or "").strip()
+        last_name  = (data.get("last_name") or "").strip()
+        email      = (data.get("email") or "").strip()
+        username   = (data.get("username") or "").strip()
+        password   = (data.get("password") or "").strip()
+
+        if not first_name or not username or not password:
+            return err("Faltan campos (first_name, username, password)", 400)
+
+        cur = db.cursor()
+        cur.execute("""
+            INSERT INTO doctors (first_name, last_name, email, username, password_plain, is_active)
+            VALUES (%s,%s,%s,%s,%s,1)
+        """, (first_name, last_name, email, username, password))
+        db.commit()
+        return ok({"id": cur.lastrowid}, 201)
+
+    except Exception as e:
+        import traceback, sys
+        print("ERROR POST /admin/doctors:", e, file=sys.stderr)
+        traceback.print_exc()
+        # DEVUELVE EL MENSAJE REAL:
+        return err(f"Error creando doctor: {e}", 500)
+
+    db = get_db()
+    admin, error = require_admin(db)
+    if error: return err(error[0], error[1])
+    try:
+        data = request.get_json(force=True)
+        first_name = (data.get("first_name") or "").strip()
+        last_name  = (data.get("last_name") or "").strip()
+        email      = (data.get("email") or "").strip()
+        username   = (data.get("username") or "").strip()
+        password   = (data.get("password") or "").strip()
+
+        if not first_name or not username or not password:
+            return err("Faltan campos obligatorios (first_name, username, password)", 400)
+
+        cur = db.cursor()
+        cur.execute("""
+            INSERT INTO doctors (first_name, last_name, email, username, password_plain, is_active)
+            VALUES (%s,%s,%s,%s,%s,1)
+        """, (first_name, last_name, email, username, password))
+        db.commit()
+        return ok({"id": cur.lastrowid}, 201)
+    except Exception as e:
+        import traceback, sys
+        print("ERROR POST /admin/doctors:", e, file=sys.stderr)
+        traceback.print_exc()
+        return err("Error creando doctor", 500)
+
+@app.patch("/admin/users/<int:user_id>/status")
+def admin_set_user_status(user_id):
+    db = get_db()
+    admin, error = require_admin(db)
+    if error: return err(error[0], error[1])
+    try:
+        data = request.get_json(force=True)
+        is_active = 1 if data.get("is_active") else 0
+        cur = db.cursor()
+        cur.execute("UPDATE users SET is_active=%s WHERE id=%s", (is_active, user_id))
+        db.commit()
+        return ok({"user_id": user_id, "is_active": bool(is_active)})
+    except Exception as e:
+        import traceback, sys
+        print("ERROR PATCH /admin/users/.../status:", e, file=sys.stderr)
+        traceback.print_exc()
+        return err("Error actualizando estado de usuario", 500)
+
+@app.patch("/admin/doctors/<int:doctor_id>/status")
+def admin_set_doctor_status(doctor_id):
+    db = get_db()
+    admin, error = require_admin(db)
+    if error: return err(error[0], error[1])
+    try:
+        data = request.get_json(force=True)
+        is_active = 1 if data.get("is_active") else 0
+        cur = db.cursor()
+        cur.execute("UPDATE doctors SET is_active=%s WHERE doctor_id=%s", (is_active, doctor_id))
+        db.commit()
+        return ok({"doctor_id": doctor_id, "is_active": bool(is_active)})
+    except Exception as e:
+        import traceback, sys
+        print("ERROR PATCH /admin/doctors/.../status:", e, file=sys.stderr)
+        traceback.print_exc()
+        return err("Error actualizando estado de doctor", 500)
+
 
 # -----------------------------
 # Punto de entrada
